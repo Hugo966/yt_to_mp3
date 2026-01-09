@@ -2,6 +2,9 @@
 
 ## Project info
 
+Web app built that processes video URLs to extract audio and provide downloadable MP3 files. The project focuses on backend development, media processing, and server-side file delivery, designed for educational use.
+
+
 **URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
 
 ## How can I edit this code?
