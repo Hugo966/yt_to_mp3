@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+#Para que no meta los archivos ni la carpeta de archivos.mp3 en cada commit
+archivos_mp3/
