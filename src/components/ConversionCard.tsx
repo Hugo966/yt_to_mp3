@@ -2,41 +2,50 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AudioWave } from "./AudioWave";
-import { Link2, Download, Loader2, Music, CheckCircle2, List, AlertCircle } from "lucide-react";
+import { Link2, Download, Loader2, Music, CheckCircle2, List, AlertCircle, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { API_ENDPOINTS } from "@/config/api";
 
 type ConversionState = "idle" | "validating" | "processing" | "ready" | "error";
 
 interface ConversionResult {
-  url: string;
+  id: string;
+  filename: string;
+  title: string;
+  size: number | null;
+  duration: string | null;
   success: boolean;
-  title?: string;
-  downloadUrl?: string;
-  duration?: string;
-  filesize?: string;
-  error?: string;
+  error: string | null;
+  wasSearch: boolean;
+  originalInput: string;
 }
-type InputMode = "single" | "batch";
+type InputMode = "single" | "batch" | "search";
 
 export const ConversionCard = () => {
-  const [urls, setUrls] = useState("");
+  const [input, setInput] = useState("");
   const [mode, setMode] = useState<InputMode>("single");
   const [state, setState] = useState<ConversionState>("idle");
   const [results, setResults] = useState<ConversionResult[]>([]);
   const { toast } = useToast();
 
-  const urlList = urls.split("\n").filter((url) => url.trim());
-  const urlCount = urlList.length;
+  const inputList = input.split("\n").filter((item) => item.trim());
+  const inputCount = inputList.length;
+  
+  // Helper function to detect if a string is a URL
+  const isUrl = (text: string) => {
+    return /^https?:\/\//i.test(text.trim());
+  };
 
   const handleConvert = async () => {
-    if (!urls.trim()) {
+    if (!input.trim()) {
       toast({
-        title: "Please enter a URL",
+        title: mode === "search" ? "Please enter a search query" : "Please enter a URL",
         description: mode === "single" 
           ? "Paste a valid video URL to convert to MP3"
-          : "Paste one or more video URLs (one per line)",
+          : mode === "search"
+          ? "Enter a search query (e.g., 'Aitana - En El Coche')"
+          : "Paste one or more URLs or search queries (one per line)",
         variant: "destructive",
       });
       return;
@@ -51,11 +60,45 @@ export const ConversionCard = () => {
     setState("processing");
 
     try {
-      const { data, error } = await supabase.functions.invoke('convert-video', {
-        body: { urls: urlList, quality: '320' }
+      // Separate inputs into URLs and search queries
+      let urls: string[] = [];
+      let searchQueries: string[] = [];
+      
+      if (mode === "search") {
+        // In search mode, treat all inputs as search queries
+        searchQueries = inputList;
+      } else if (mode === "batch") {
+        // In batch mode, detect URLs vs search queries
+        inputList.forEach(item => {
+          if (isUrl(item)) {
+            urls.push(item);
+          } else {
+            searchQueries.push(item);
+          }
+        });
+      } else {
+        // In single mode, detect if it's a URL or search query
+        if (isUrl(input)) {
+          urls = [input];
+        } else {
+          searchQueries = [input];
+        }
+      }
+
+      const response = await fetch(API_ENDPOINTS.convert, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ urls, searchQueries }),
       });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Conversion failed');
+      }
+
+      const data = await response.json();
 
       if (data.results) {
         setResults(data.results);
@@ -65,15 +108,15 @@ export const ConversionCard = () => {
           setState("ready");
           toast({
             title: "Conversion complete!",
-            description: successCount === urlList.length 
+            description: successCount === inputList.length 
               ? `${successCount} MP3 file${successCount > 1 ? 's are' : ' is'} ready to download`
-              : `${successCount} of ${urlList.length} conversions succeeded`,
+              : `${successCount} of ${inputList.length} conversions succeeded`,
           });
         } else {
           setState("error");
           toast({
             title: "Conversion failed",
-            description: "Could not convert the provided URL(s). Please check they are valid YouTube URLs.",
+            description: "Could not convert any of the provided inputs. Please check and try again.",
             variant: "destructive",
           });
         }
@@ -83,13 +126,14 @@ export const ConversionCard = () => {
       setState("error");
       toast({
         title: "Conversion failed",
-        description: err instanceof Error ? err.message : "An unexpected error occurred",
+        description: err instanceof Error ? err.message : "An unexpected error occurred. Make sure the backend server is running.",
         variant: "destructive",
       });
     }
   };
 
-  const handleDownload = (downloadUrl: string, title: string) => {
+  const handleDownload = (fileId: string, title: string) => {
+    const downloadUrl = API_ENDPOINTS.download(fileId);
     window.open(downloadUrl, '_blank');
     toast({
       title: "Download started",
@@ -98,12 +142,11 @@ export const ConversionCard = () => {
   };
 
   const handleDownloadAll = () => {
-    const successfulResults = results.filter(r => r.success && r.downloadUrl);
+    const successfulResults = results.filter(r => r.success);
     successfulResults.forEach((result, index) => {
       setTimeout(() => {
-        if (result.downloadUrl) {
-          window.open(result.downloadUrl, '_blank');
-        }
+        const downloadUrl = API_ENDPOINTS.download(result.id);
+        window.open(downloadUrl, '_blank');
       }, index * 500);
     });
     toast({
@@ -114,7 +157,7 @@ export const ConversionCard = () => {
 
   const handleReset = () => {
     setState("idle");
-    setUrls("");
+    setInput("");
     setResults([]);
   };
 
@@ -128,7 +171,7 @@ export const ConversionCard = () => {
           <div>
             <h2 className="font-display text-xl font-semibold">Convert Video to MP3</h2>
             <p className="text-muted-foreground text-sm">
-              {mode === "single" ? "Paste your video URL below" : "Paste multiple URLs (one per line)"}
+              {mode === "single" ? "Paste your video URL below" : mode === "search" ? "Search and convert" : "Paste multiple URLs (one per line)"}
             </p>
           </div>
         </div>
@@ -145,6 +188,18 @@ export const ConversionCard = () => {
               )}
             >
               Single
+            </button>
+            <button
+              onClick={() => setMode("search")}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-1.5",
+                mode === "search" 
+                  ? "bg-primary text-primary-foreground" 
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Search className="w-3.5 h-3.5" />
+              Search
             </button>
             <button
               onClick={() => setMode("batch")}
@@ -164,24 +219,30 @@ export const ConversionCard = () => {
 
       <div className="space-y-4">
         <div className="relative">
-          <Link2 className="absolute left-4 top-4 w-5 h-5 text-muted-foreground" />
+          {mode === "search" ? (
+            <Search className="absolute left-4 top-4 w-5 h-5 text-muted-foreground" />
+          ) : (
+            <Link2 className="absolute left-4 top-4 w-5 h-5 text-muted-foreground" />
+          )}
           <Textarea
             placeholder={mode === "single" 
               ? "https://www.youtube.com/watch?v=..." 
-              : "https://www.youtube.com/watch?v=abc123\nhttps://www.youtube.com/watch?v=def456\nhttps://vimeo.com/123456789"
+              : mode === "search"
+              ? "e.g., Aitana - En El Coche"
+              : "https://www.youtube.com/watch?v=abc123\nhttps://www.youtube.com/watch?v=def456\nAitana - En El Coche"
             }
-            value={urls}
-            onChange={(e) => setUrls(e.target.value)}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
             className={cn(
               "pl-12 text-base resize-none",
-              mode === "single" ? "min-h-[56px] py-4" : "min-h-[120px]"
+              mode === "single" || mode === "search" ? "min-h-[56px] py-4" : "min-h-[120px]"
             )}
             disabled={state !== "idle"}
-            rows={mode === "single" ? 1 : 4}
+            rows={mode === "batch" ? 4 : 1}
           />
-          {mode === "batch" && urlCount > 0 && state === "idle" && (
+          {mode === "batch" && inputCount > 0 && state === "idle" && (
             <div className="absolute right-4 top-4 bg-primary/20 text-primary text-xs font-medium px-2 py-1 rounded-full">
-              {urlCount} URL{urlCount !== 1 ? "s" : ""}
+              {inputCount} item{inputCount !== 1 ? "s" : ""}
             </div>
           )}
         </div>
@@ -193,8 +254,12 @@ export const ConversionCard = () => {
             className="w-full"
             onClick={handleConvert}
           >
-            {mode === "batch" && urlCount > 1 
-              ? `Convert ${urlCount} Videos to MP3` 
+            {mode === "search" && inputCount > 1
+              ? `Search & Convert ${inputCount} Queries`
+              : mode === "batch" && inputCount > 1 
+              ? `Convert ${inputCount} Items to MP3` 
+              : mode === "search"
+              ? "Search & Convert to MP3"
               : "Convert to MP3"
             }
           </Button>
@@ -207,8 +272,8 @@ export const ConversionCard = () => {
                 <Loader2 className="w-5 h-5 text-primary animate-spin" />
                 <span className="text-sm font-medium">
                   {state === "validating" 
-                    ? `Validating ${urlCount > 1 ? `${urlCount} URLs` : "URL"}...` 
-                    : `Converting ${urlCount > 1 ? `${urlCount} videos` : "video"} to MP3...`
+                    ? `Validating ${inputCount > 1 ? `${inputCount} items` : "input"}...` 
+                    : `Converting ${inputCount > 1 ? `${inputCount} items` : ""} to MP3...`
                   }
                 </span>
               </div>
@@ -242,22 +307,33 @@ export const ConversionCard = () => {
                     result.success ? "bg-background/50" : "bg-destructive/10"
                   )}>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">
-                        {result.success ? result.title : "Failed"}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        {result.success && <Music className="w-4 h-4 text-primary shrink-0" />}
+                        <p className="text-sm font-medium truncate">
+                          {result.success ? result.title : "Failed"}
+                        </p>
+                        {result.success && result.wasSearch && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/20 text-accent text-xs font-medium shrink-0">
+                            <Search className="w-3 h-3" />
+                            Found
+                          </span>
+                        )}
+                      </div>
                       {result.success ? (
-                        <p className="text-xs text-muted-foreground">
-                          {result.duration} • 320 kbps
+                        <p className="text-xs text-muted-foreground mt-1 ml-6">
+                          {result.size ? `${(result.size / 1024 / 1024).toFixed(2)} MB` : 'Unknown size'}
+                          {result.duration && ` • ${result.duration}`}
                         </p>
                       ) : (
                         <p className="text-xs text-destructive">{result.error}</p>
                       )}
                     </div>
-                    {result.success && result.downloadUrl && (
+                    {result.success && (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleDownload(result.downloadUrl!, result.title || 'audio')}
+                        onClick={() => handleDownload(result.id, result.title)}
+                        className="shrink-0"
                       >
                         <Download className="w-4 h-4" />
                       </Button>
@@ -285,8 +361,8 @@ export const ConversionCard = () => {
                   className="flex-1"
                   onClick={() => {
                     const successResult = results.find(r => r.success);
-                    if (successResult?.downloadUrl) {
-                      handleDownload(successResult.downloadUrl, successResult.title || 'audio');
+                    if (successResult) {
+                      handleDownload(successResult.id, successResult.title);
                     }
                   }}
                 >
